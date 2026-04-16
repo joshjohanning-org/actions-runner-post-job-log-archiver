@@ -1,0 +1,65 @@
+name: Test Post-Job Log Hook
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'hooks/**'
+      - '.github/workflows/test-hook.yml'
+
+jobs:
+  test-log-capture:
+    name: Test Log Capture
+    runs-on: [self-hosted]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Basic output
+        run: |
+          echo "Hello from the post-job log archiver test!"
+          echo "This output should be captured by the post-job hook."
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Runner: ${{ runner.name }}"
+
+      - name: Multi-line output
+        run: |
+          echo "=== System Information ==="
+          echo "Hostname: $(hostname)"
+          echo "Date:     $(date -u)"
+          echo "User:     $(whoami)"
+          echo "PWD:      $(pwd)"
+          echo ""
+          echo "=== Environment ==="
+          echo "RUNNER_TEMP:  ${RUNNER_TEMP:-not set}"
+          echo "RUNNER_OS:    ${RUNNER_OS:-not set}"
+          echo "RUNNER_NAME:  ${RUNNER_NAME:-not set}"
+          echo ""
+          echo "=== Generating numbered output ==="
+          for i in $(seq 1 20); do
+            printf "Line %03d: The quick brown fox jumps over the lazy dog\n" "$i"
+          done
+
+      - name: Curl example
+        run: |
+          echo "Fetching example.com ..."
+          curl -sS -o /dev/null -w "HTTP Status: %{http_code}\nTime: %{time_total}s\n" https://example.com
+          echo "Done."
+
+      - name: Verify hook is configured
+        run: |
+          echo "Checking post-job hook configuration ..."
+          if [[ -n "${ACTIONS_RUNNER_HOOK_JOB_COMPLETED:-}" ]]; then
+            echo "✅ ACTIONS_RUNNER_HOOK_JOB_COMPLETED is set: ${ACTIONS_RUNNER_HOOK_JOB_COMPLETED}"
+          else
+            echo "⚠️  ACTIONS_RUNNER_HOOK_JOB_COMPLETED is not set."
+            echo "   The post-job hook is not configured on this runner."
+            echo "   See the README for setup instructions."
+          fi
+          if [[ -n "${ACTIONS_RUNNER_HOOK_JOB_STARTED:-}" ]]; then
+            echo "✅ ACTIONS_RUNNER_HOOK_JOB_STARTED is set: ${ACTIONS_RUNNER_HOOK_JOB_STARTED}"
+          else
+            echo "⚠️  ACTIONS_RUNNER_HOOK_JOB_STARTED is not set."
+          fi
