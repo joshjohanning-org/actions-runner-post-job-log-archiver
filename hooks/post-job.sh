@@ -122,9 +122,6 @@ log "Archive directory: ${ARCHIVE_PATH}"
 # ---------------------------------------------------------------------------
 # Resolve the runner root and _diag/pages/ directory
 # ---------------------------------------------------------------------------
-# The runner root is typically the parent of _work. We can derive it from
-# RUNNER_TEMP (which is _work/_temp) by going up two levels, or from
-# AGENT_TOOLSDIRECTORY, or by looking for _diag relative to the script.
 RUNNER_ROOT=""
 
 # Strategy 1: derive from RUNNER_TEMP (_work/_temp -> runner root is ../..)
@@ -158,55 +155,89 @@ PAGES_DIR="${RUNNER_ROOT:+${RUNNER_ROOT}/_diag/pages}"
 DIAG_DIR="${RUNNER_ROOT:+${RUNNER_ROOT}/_diag}"
 
 # ---------------------------------------------------------------------------
-# PRIMARY: Copy raw runtime logs from _diag/pages/
+# Stop the page watcher started by pre-job.sh
 # ---------------------------------------------------------------------------
-# The runner writes step stdout/stderr output to _diag/pages/ as log "page"
-# files. These are the EXACT content of "View raw logs" in the GitHub UI.
+WATCHER_PID_FILE="${RUNNER_TEMP_DIR:-.}/.page_watcher.pid"
+if [[ -f "${WATCHER_PID_FILE}" ]]; then
+  WATCHER_PID="$(cat "${WATCHER_PID_FILE}")"
+  if kill -0 "${WATCHER_PID}" 2>/dev/null; then
+    # Give it a moment to catch any final page writes
+    sleep 0.5
+    kill "${WATCHER_PID}" 2>/dev/null || true
+    wait "${WATCHER_PID}" 2>/dev/null || true
+    log "Stopped page watcher (PID ${WATCHER_PID})"
+  else
+    log "Page watcher (PID ${WATCHER_PID}) already exited"
+  fi
+  rm -f "${WATCHER_PID_FILE}"
+fi
+
+# ---------------------------------------------------------------------------
+# PRIMARY: Collect staged raw log pages captured by the watcher
+# ---------------------------------------------------------------------------
+# The pre-job hook starts a background watcher that copies _diag/pages/*.log
+# files to a staging directory before the runner deletes them after upload.
+# These are the EXACT content of "View raw logs" in the GitHub UI.
 # File naming: {timelineId}_{recordId}_{pageNumber}.log
-#
-# We identify which files belong to THIS job by comparing modification times
-# against the pre-job start time recorded by pre-job.sh. Files modified after
-# the job started belong to the current job.
 # ---------------------------------------------------------------------------
 PAGES_LOG_COUNT=0
+STAGING_DIR="${RUNNER_TEMP_DIR:-.}/.log_pages_staging"
 
-if [[ -n "${PAGES_DIR}" && -d "${PAGES_DIR}" ]]; then
-  log "Scanning for runtime log pages in ${PAGES_DIR} ..."
+if [[ -d "${STAGING_DIR}" ]]; then
+  log "Collecting staged log pages from ${STAGING_DIR} ..."
 
   mkdir -p "${ARCHIVE_PATH}/raw_logs"
 
   while IFS= read -r -d '' pagefile; do
-    # Filter by modification time if we have a start epoch
-    if [[ ${JOB_START_EPOCH} -gt 0 ]]; then
-      if date --version &>/dev/null 2>&1; then
-        FILE_EPOCH=$(stat -c '%Y' "${pagefile}" 2>/dev/null || echo 0)
-      else
-        FILE_EPOCH=$(stat -f '%m' "${pagefile}" 2>/dev/null || echo 0)
-      fi
-      # Allow a 5-second grace period before the recorded start time
-      if [[ ${FILE_EPOCH} -lt $((JOB_START_EPOCH - 5)) ]]; then
-        continue
-      fi
-    fi
-
     BASENAME="$(basename "${pagefile}")"
-    # Only copy non-empty files
     if [[ -s "${pagefile}" ]]; then
       cp -a "${pagefile}" "${ARCHIVE_PATH}/raw_logs/${BASENAME}" 2>/dev/null \
         && PAGES_LOG_COUNT=$((PAGES_LOG_COUNT + 1))
     fi
-  done < <(find "${PAGES_DIR}" -type f -name '*.log' -print0 2>/dev/null)
+  done < <(find "${STAGING_DIR}" -type f -name '*.log' -print0 2>/dev/null)
 
-  log "Copied ${PAGES_LOG_COUNT} runtime log page(s) from _diag/pages/"
+  log "Collected ${PAGES_LOG_COUNT} staged log page(s)"
 
-  # Also create a single combined raw log file, sorted by timestamp
+  # Also grab any pages still in _diag/pages/ that the watcher might have missed
+  if [[ -n "${PAGES_DIR}" && -d "${PAGES_DIR}" ]]; then
+    EXTRA=0
+    while IFS= read -r -d '' pagefile; do
+      BASENAME="$(basename "${pagefile}")"
+      if [[ -s "${pagefile}" && ! -f "${ARCHIVE_PATH}/raw_logs/${BASENAME}" ]]; then
+        cp -a "${pagefile}" "${ARCHIVE_PATH}/raw_logs/${BASENAME}" 2>/dev/null \
+          && EXTRA=$((EXTRA + 1))
+      fi
+    done < <(find "${PAGES_DIR}" -type f -name '*.log' -print0 2>/dev/null)
+    if [[ ${EXTRA} -gt 0 ]]; then
+      PAGES_LOG_COUNT=$((PAGES_LOG_COUNT + EXTRA))
+      log "Grabbed ${EXTRA} additional page(s) still in _diag/pages/"
+    fi
+  fi
+
+  # Create a single combined raw log file, sorted by timestamp
   if [[ ${PAGES_LOG_COUNT} -gt 0 ]]; then
     sort "${ARCHIVE_PATH}/raw_logs/"*.log > "${ARCHIVE_PATH}/combined_raw_log.log" 2>/dev/null \
       && log "Created combined_raw_log.log" \
       || warn "Failed to create combined log"
   fi
+
+  # Clean up staging
+  rm -rf "${STAGING_DIR}"
 else
-  warn "Could not locate _diag/pages/ directory (RUNNER_ROOT=${RUNNER_ROOT:-not found})"
+  warn "No staging directory found at ${STAGING_DIR} - was pre-job.sh configured?"
+
+  # Fallback: try _diag/pages/ directly (might catch current step's pages)
+  if [[ -n "${PAGES_DIR}" && -d "${PAGES_DIR}" ]]; then
+    mkdir -p "${ARCHIVE_PATH}/raw_logs"
+    while IFS= read -r -d '' pagefile; do
+      BASENAME="$(basename "${pagefile}")"
+      if [[ -s "${pagefile}" ]]; then
+        cp -a "${pagefile}" "${ARCHIVE_PATH}/raw_logs/${BASENAME}" 2>/dev/null \
+          && PAGES_LOG_COUNT=$((PAGES_LOG_COUNT + 1))
+      fi
+    done < <(find "${PAGES_DIR}" -type f -name '*.log' -print0 2>/dev/null)
+    log "Direct scan found ${PAGES_LOG_COUNT} page(s) in _diag/pages/"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -222,7 +253,7 @@ if [[ -n "${RUNNER_TEMP_DIR}" && -d "${RUNNER_TEMP_DIR}" ]]; then
     DEST_DIR="${ARCHIVE_PATH}/runner_temp/$(dirname "${REL_PATH}")"
     mkdir -p "${DEST_DIR}"
     cp -a "${logfile}" "${DEST_DIR}/" 2>/dev/null && TEMP_LOG_COUNT=$((TEMP_LOG_COUNT + 1))
-  done < <(find "${RUNNER_TEMP_DIR}" -type f \( -name '*.txt' -o -name '*.log' -o -name '*.json' -o -name '*.cmd' -o -name '*.sh' \) -print0 2>/dev/null)
+  done < <(find "${RUNNER_TEMP_DIR}" -type f \( -name '*.txt' -o -name '*.log' -o -name '*.json' -o -name '*.cmd' -o -name '*.sh' \) -not -path '*/.log_pages_staging/*' -print0 2>/dev/null)
 
   log "Copied ${TEMP_LOG_COUNT} file(s) from runner temp directory"
 fi
@@ -232,7 +263,6 @@ fi
 # ---------------------------------------------------------------------------
 WORKER_LOG_COUNT=0
 if [[ -n "${DIAG_DIR}" && -d "${DIAG_DIR}" ]]; then
-  # The Worker log for the current job is the most recently modified one
   LATEST_WORKER_LOG="$(ls -t "${DIAG_DIR}"/Worker_*.log 2>/dev/null | head -1)"
   if [[ -n "${LATEST_WORKER_LOG}" && -f "${LATEST_WORKER_LOG}" ]]; then
     cp -a "${LATEST_WORKER_LOG}" "${ARCHIVE_PATH}/" 2>/dev/null \
