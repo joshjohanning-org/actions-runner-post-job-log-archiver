@@ -214,8 +214,82 @@ if [[ -d "${STAGING_DIR}" ]]; then
     fi
   fi
 
-  # Create a single combined raw log file, sorted by timestamp
+  # ---------------------------------------------------------------------------
+  # Build index.json: identify each page file's step name and order
+  # ---------------------------------------------------------------------------
+  # Each page file contains ##[group] markers that identify the step.
+  # We also parse the Worker log for DisplayName → recordId mappings to
+  # get the execution order.
+  # ---------------------------------------------------------------------------
   if [[ ${PAGES_LOG_COUNT} -gt 0 ]]; then
+    log "Building step index ..."
+
+    # Parse Worker log for step order: "Processing step: DisplayName='...'"
+    # and correlate with "web console lines for record 'GUID'"
+    WORKER_LOG="${ARCHIVE_PATH}/Worker_"*.log
+    STEP_ORDER=0
+
+    # Start the JSON array
+    INDEX_FILE="${ARCHIVE_PATH}/index.json"
+    echo '[' > "${INDEX_FILE}"
+    FIRST_ENTRY=true
+
+    for pagefile in "${ARCHIVE_PATH}/raw_logs/"*.log; do
+      [[ -f "${pagefile}" ]] || continue
+      BASENAME="$(basename "${pagefile}")"
+
+      # Extract the recordId from the filename: {timelineId}_{recordId}_{page}.log
+      RECORD_ID="$(echo "${BASENAME}" | sed 's/^[^_]*_\(.*\)_[0-9]*\.log$/\1/')"
+      PAGE_NUM="$(echo "${BASENAME}" | sed 's/.*_\([0-9]*\)\.log$/\1/')"
+
+      # Extract step name from first ##[group] marker in the file
+      STEP_NAME="$(grep -m1 '##\[group\]' "${pagefile}" 2>/dev/null | sed 's/^.*##\[group\]//' | sed 's/^Run //' || echo "")"
+
+      # If no ##[group], try the first non-blank content line
+      if [[ -z "${STEP_NAME}" ]]; then
+        STEP_NAME="$(grep -m1 '^[0-9T:.-]*Z [^ ]' "${pagefile}" 2>/dev/null | sed 's/^[0-9T:.-]*Z //' || echo "unknown")"
+      fi
+
+      # Sanitize step name for use as filename
+      SAFE_STEP="$(echo "${STEP_NAME}" | sed 's/[^a-zA-Z0-9._-]/_/g' | cut -c1-80)"
+      LINE_COUNT="$(wc -l < "${pagefile}" | tr -d ' ')"
+      BYTE_COUNT="$(wc -c < "${pagefile}" | tr -d ' ')"
+
+      STEP_ORDER=$((STEP_ORDER + 1))
+
+      # Create a human-readable symlink/copy: 01_Checkout_repository.log
+      LABELED_NAME="$(printf '%02d' ${STEP_ORDER})_${SAFE_STEP}.log"
+      # Use a labeled/ subdirectory so raw_logs/ stays pristine with original GUIDs
+      mkdir -p "${ARCHIVE_PATH}/steps"
+      cp "${pagefile}" "${ARCHIVE_PATH}/steps/${LABELED_NAME}" 2>/dev/null || true
+
+      # Append to index.json
+      if [[ "${FIRST_ENTRY}" != "true" ]]; then
+        echo ',' >> "${INDEX_FILE}"
+      fi
+      FIRST_ENTRY=false
+
+      # Escape any double quotes in step name for JSON
+      ESCAPED_STEP="$(echo "${STEP_NAME}" | sed 's/"/\\"/g')"
+
+      cat >> "${INDEX_FILE}" <<ENTRY_EOF
+  {
+    "order": ${STEP_ORDER},
+    "step_name": "${ESCAPED_STEP}",
+    "record_id": "${RECORD_ID}",
+    "page": ${PAGE_NUM},
+    "original_file": "${BASENAME}",
+    "labeled_file": "${LABELED_NAME}",
+    "lines": ${LINE_COUNT},
+    "bytes": ${BYTE_COUNT}
+  }
+ENTRY_EOF
+    done
+
+    echo ']' >> "${INDEX_FILE}"
+    log "Created index.json with ${STEP_ORDER} step(s)"
+
+    # Create a single combined raw log file, sorted by timestamp
     sort "${ARCHIVE_PATH}/raw_logs/"*.log > "${ARCHIVE_PATH}/combined_raw_log.log" 2>/dev/null \
       && log "Created combined_raw_log.log" \
       || warn "Failed to create combined log"
