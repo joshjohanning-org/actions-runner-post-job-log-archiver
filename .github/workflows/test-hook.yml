@@ -17,6 +17,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - run: sleep 1000
+
       - name: Basic output
         run: |
           echo "Hello from the post-job log archiver test!"
