@@ -229,8 +229,10 @@ if [[ -d "${STAGING_DIR}" ]]; then
     WORKER_LOG="${ARCHIVE_PATH}/Worker_"*.log
     STEP_ORDER=0
 
+    mkdir -p "${ARCHIVE_PATH}/steps"
+
     # Start the JSON array
-    INDEX_FILE="${ARCHIVE_PATH}/index.json"
+    INDEX_FILE="${ARCHIVE_PATH}/steps/index.json"
     echo '[' > "${INDEX_FILE}"
     FIRST_ENTRY=true
 
@@ -257,10 +259,8 @@ if [[ -d "${STAGING_DIR}" ]]; then
 
       STEP_ORDER=$((STEP_ORDER + 1))
 
-      # Create a human-readable symlink/copy: 01_Checkout_repository.log
+      # Create a human-readable copy: 01_Checkout_repository.log
       LABELED_NAME="$(printf '%02d' ${STEP_ORDER})_${SAFE_STEP}.log"
-      # Use a labeled/ subdirectory so raw_logs/ stays pristine with original GUIDs
-      mkdir -p "${ARCHIVE_PATH}/steps"
       cp "${pagefile}" "${ARCHIVE_PATH}/steps/${LABELED_NAME}" 2>/dev/null || true
 
       # Append to index.json
@@ -287,12 +287,15 @@ ENTRY_EOF
     done
 
     echo ']' >> "${INDEX_FILE}"
-    log "Created index.json with ${STEP_ORDER} step(s)"
+    log "Created steps/index.json with ${STEP_ORDER} step(s)"
 
     # Create a single combined raw log file, sorted by timestamp
     sort "${ARCHIVE_PATH}/raw_logs/"*.log > "${ARCHIVE_PATH}/combined_raw_log.log" 2>/dev/null \
       && log "Created combined_raw_log.log" \
       || warn "Failed to create combined log"
+
+    # Remove raw_logs/ - steps/ has the same content with friendly names
+    rm -rf "${ARCHIVE_PATH}/raw_logs"
   fi
 
   # Clean up staging
@@ -302,11 +305,11 @@ else
 
   # Fallback: try _diag/pages/ directly (might catch current step's pages)
   if [[ -n "${PAGES_DIR}" && -d "${PAGES_DIR}" ]]; then
-    mkdir -p "${ARCHIVE_PATH}/raw_logs"
+    mkdir -p "${ARCHIVE_PATH}/steps"
     while IFS= read -r -d '' pagefile; do
       BASENAME="$(basename "${pagefile}")"
       if [[ -s "${pagefile}" ]]; then
-        cp -a "${pagefile}" "${ARCHIVE_PATH}/raw_logs/${BASENAME}" 2>/dev/null \
+        cp -a "${pagefile}" "${ARCHIVE_PATH}/steps/${BASENAME}" 2>/dev/null \
           && PAGES_LOG_COUNT=$((PAGES_LOG_COUNT + 1))
       fi
     done < <(find "${PAGES_DIR}" -type f -name '*.log' -print0 2>/dev/null)

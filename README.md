@@ -68,7 +68,7 @@ This project uses **two runner hooks** working together:
 Each raw log page file uses opaque GUIDs as filenames (e.g., `c8a322dc_a18726f9_1.log`). The post-job hook parses `##[group]` markers inside each file to extract the human-readable step name (e.g., `actions/checkout@v4`) and produces both:
 
 - **`steps/`** — Labeled copies like `04_actions_checkout_v4.log`
-- **`index.json`** — Machine-readable manifest mapping each file to its step name, order, and size
+- **`steps/index.json`** — Machine-readable manifest mapping each file to its step name, order, and size
 
 ## Archive Structure
 
@@ -79,17 +79,14 @@ $LOG_ARCHIVE_DIR/
 └── owner/repo-name/
     └── 12345678_attempt1/
         └── build/                        # Job name
-            ├── index.json                # Step manifest (name, order, record ID, sizes)
             ├── metadata.json             # Job context (repo, actor, duration, etc.)
             ├── combined_raw_log.log      # All steps merged, sorted by timestamp
             ├── steps/                    # Human-readable step logs
+            │   ├── index.json            # Step manifest (name, order, record ID, sizes)
             │   ├── 01_Set_up_job.log
             │   ├── 02_actions_checkout_v4.log
             │   ├── 03_Run_tests.log
             │   └── 04_Post_actions_checkout_v4.log
-            ├── raw_logs/                 # Original GUID-named page files
-            │   ├── {timelineId}_{recordId}_1.log
-            │   └── ...
             ├── runner_temp/              # Step scripts and event.json from $RUNNER_TEMP
             │   ├── abc123.sh
             │   └── _github_workflow/
@@ -97,7 +94,7 @@ $LOG_ARCHIVE_DIR/
             └── Worker_*.log              # Runner diagnostic log (internal details)
 ```
 
-### `index.json`
+### `steps/index.json`
 
 ```json
 [
@@ -146,9 +143,8 @@ $LOG_ARCHIVE_DIR/
 | File | Contents | Use Case |
 |---|---|---|
 | `steps/*.log` | Per-step output with human-readable names | Quick browsing, "which step failed?" |
-| `raw_logs/*.log` | Same content, GUID filenames | Correlation with runner internals |
 | `combined_raw_log.log` | All steps merged by timestamp | Full job timeline in one file |
-| `index.json` | Step manifest with names, sizes, order | Programmatic access / dashboards |
+| `steps/index.json` | Step manifest with names, sizes, order | Programmatic access / dashboards |
 | `metadata.json` | Job context (repo, actor, SHA, duration) | Audit trail / log aggregation metadata |
 | `runner_temp/*.sh` | The actual shell scripts the runner generated for each `run:` step | Debugging "what script did GitHub actually run?" |
 | `runner_temp/event.json` | The webhook event payload that triggered the workflow | Debugging trigger context |
@@ -236,7 +232,7 @@ The hooks archive logs to the local filesystem. From there, you can ship them to
 
 - **Filebeat / Logstash:** Point at the archive directory, use `metadata.json` for structured fields
 - **Fluentd / Fluent Bit:** `tail` input plugin on the archive directory
-- **Splunk Universal Forwarder:** Monitor the archive directory, index `index.json` for step metadata
+- **Splunk Universal Forwarder:** Monitor the archive directory, index `steps/index.json` for step metadata
 - **Datadog Agent:** File-based log collection with custom parsing
 
 ### Cloud Object Storage
@@ -247,7 +243,7 @@ The hooks archive logs to the local filesystem. From there, you can ship them to
 
 ### Custom Post-Processing
 
-The `post-job.sh` script is designed to be extended. Add your own upload/shipping logic at the end of the script, after the archive is written. The `metadata.json` and `index.json` files provide all the context needed for downstream systems.
+The `post-job.sh` script is designed to be extended. Add your own upload/shipping logic at the end of the script, after the archive is written. The `metadata.json` and `steps/index.json` files provide all the context needed for downstream systems.
 
 > **Note:** `actions/upload-artifact` **cannot** be used from a post-job hook. The hook runs outside the Actions step execution context — there is no access to the Actions runtime services (which use internal gRPC, not the public REST API). Use direct API calls or CLI tools instead.
 
@@ -268,7 +264,7 @@ Then check the archive directory on your runner:
 find /var/log/actions-runner-logs/ -type f | head -20
 
 # View the step index
-cat /var/log/actions-runner-logs/<owner>/<repo>/<run_id>_attempt1/<job>/index.json
+cat /var/log/actions-runner-logs/<owner>/<repo>/<run_id>_attempt1/<job>/steps/index.json
 
 # View a specific step's output
 cat /var/log/actions-runner-logs/<owner>/<repo>/<run_id>_attempt1/<job>/steps/02_actions_checkout_v4.log
@@ -390,7 +386,7 @@ OSS examples of this approach:
 
 ### Empty or missing step logs
 
-- If `steps/` directory is empty but `raw_logs/` has files, the `##[group]` marker parsing may have failed for those steps — check the raw log content
+- If `steps/` directory is empty, the `##[group]` marker parsing may have failed for those steps — check `combined_raw_log.log` for the raw content
 - Steps that produce no output may not generate a page file at all
 
 ### Permission denied on archive directory
