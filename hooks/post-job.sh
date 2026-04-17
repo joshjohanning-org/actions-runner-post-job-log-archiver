@@ -289,8 +289,8 @@ ENTRY_EOF
     echo ']' >> "${INDEX_FILE}"
     log "Created steps/index.json with ${STEP_ORDER} step(s)"
 
-    # Create a single combined raw log file, sorted by timestamp
-    sort "${ARCHIVE_PATH}/raw_logs/"*.log > "${ARCHIVE_PATH}/combined_raw_log.log" 2>/dev/null \
+    # Create a single combined log file from the ordered step files
+    cat "${ARCHIVE_PATH}/steps/"[0-9]*.log > "${ARCHIVE_PATH}/combined_raw_log.log" 2>/dev/null \
       && log "Created combined_raw_log.log" \
       || warn "Failed to create combined log"
 
